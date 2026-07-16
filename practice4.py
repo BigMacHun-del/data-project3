@@ -12,6 +12,7 @@
 # 0.3 : 2026년 7월 16일 - 한글 폰트 하드코딩(Noto Sans CJK JP) -> OS별 자동 탐지 방식으로 수정
 #                       (macOS에서 한글이 네모(tofu)로 깨지는 문제 해결)
 # 0.4 : 2026년 7월 16일 - 통계 검정 추가 (서울 vs 부산 t-test, category x payment_method 카이제곱)
+# 0.5 : 2026년 7월 16일 - sklearn Pipeline 구성 + 저장/재로딩 추가 (amount 예측 회귀 모델)
 # --------------
 
 import sys
@@ -20,6 +21,13 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
 from scipy import stats
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LinearRegression
+import joblib
 
 FILE_PATH = "sales_100k.csv"
 
@@ -144,3 +152,59 @@ if chi2_pvalue < 0.05:
     print("=> p < 0.05 이므로 category와 payment_method는 서로 독립이 아닙니다 (연관성이 있습니다).")
 else:
     print("=> p >= 0.05 이므로 category와 payment_method는 서로 독립입니다 (연관성이 없습니다).")
+
+
+# -----------------------------
+# 3. sklearn Pipeline 구성 + 저장
+#    - 목표: quantity, unit_price, customer_age(수치형) + region, category,
+#            payment_method, customer_gender(범주형)로 amount(매출)를 예측하는 회귀 모델
+# -----------------------------
+numeric_features = ["quantity", "unit_price", "customer_age"]
+categorical_features = ["region", "category", "payment_method", "customer_gender"]
+
+X = df_clean[numeric_features + categorical_features]
+y = df_clean["amount"]
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# 수치형: 표준화 / 범주형: 결측치를 'Unknown'으로 채운 뒤 원-핫 인코딩
+numeric_transformer = Pipeline(steps=[
+    ("scaler", StandardScaler()),
+])
+
+categorical_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="constant", fill_value="Unknown")),  # region/category 결측치 처리
+    ("onehot", OneHotEncoder(handle_unknown="ignore")),
+])
+
+preprocessor = ColumnTransformer(transformers=[
+    ("num", numeric_transformer, numeric_features),
+    ("cat", categorical_transformer, categorical_features),
+])
+
+# 전처리 + 모델을 하나의 Pipeline 객체로 구성
+pipe = Pipeline(steps=[
+    ("preprocessor", preprocessor),
+    ("model", LinearRegression()),
+])
+
+pipe.fit(X_train, y_train)  # 훈련
+y_pred = pipe.predict(X_test)  # 예측
+r2_score = pipe.score(X_test, y_test)  # 평가 (R^2)
+
+print("\n" + "=" * 50)
+print("[Pipeline] amount 예측 회귀 모델 (전처리 + LinearRegression)")
+print("=" * 50)
+print(f"테스트 데이터 R^2 score : {r2_score:.4f}")
+print(f"예측값 예시 (상위 5개)  : {y_pred[:5].round(0)}")
+print(f"실제값 예시 (상위 5개)  : {y_test.values[:5].round(0)}")
+
+# 모델 저장
+MODEL_PATH = "sales_amount_pipeline.pkl"
+joblib.dump(pipe, MODEL_PATH)
+print(f"[저장 완료] {MODEL_PATH}")
+
+# 저장된 모델 재로딩 후 정상 작동 확인
+loaded_pipe = joblib.load(MODEL_PATH)
+reload_r2_score = loaded_pipe.score(X_test, y_test)
+print(f"[재로딩 확인] 재로딩한 모델의 R^2 score : {reload_r2_score:.4f} (원본과 동일해야 정상)")

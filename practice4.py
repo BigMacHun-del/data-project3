@@ -13,6 +13,7 @@
 #                       (macOS에서 한글이 네모(tofu)로 깨지는 문제 해결)
 # 0.4 : 2026년 7월 16일 - 통계 검정 추가 (서울 vs 부산 t-test, category x payment_method 카이제곱)
 # 0.5 : 2026년 7월 16일 - sklearn Pipeline 구성 + 저장/재로딩 추가 (amount 예측 회귀 모델)
+# 0.6 : 2026년 7월 16일 - Plotly 인터랙티브 막대 차트(지역·카테고리별 총매출) 추가, HTML 저장
 # --------------
 
 import sys
@@ -28,6 +29,7 @@ from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression
 import joblib
+import plotly.express as px
 
 FILE_PATH = "sales_100k.csv"
 
@@ -208,3 +210,27 @@ print(f"[저장 완료] {MODEL_PATH}")
 loaded_pipe = joblib.load(MODEL_PATH)
 reload_r2_score = loaded_pipe.score(X_test, y_test)
 print(f"[재로딩 확인] 재로딩한 모델의 R^2 score : {reload_r2_score:.4f} (원본과 동일해야 정상)")
+
+
+# -----------------------------
+# 4. Plotly 인터랙티브 차트 - 지역·카테고리별 총매출 막대 차트, HTML로 저장
+# -----------------------------
+region_category_total = (
+    df_clean.groupby(["region", "category"], as_index=False)["amount"]
+    .sum()
+    .rename(columns={"amount": "total"})
+)
+
+fig_plotly = px.bar(
+    region_category_total,
+    x="region",
+    y="total",
+    color="category",
+    barmode="group",
+    title="지역·카테고리별 총매출",
+    labels={"region": "지역", "total": "총매출", "category": "카테고리"},
+)
+
+PLOTLY_HTML_PATH = "sales_by_region_category.html"
+fig_plotly.write_html(PLOTLY_HTML_PATH)  # 화면 출력(.show())이 아니라 파일로 저장
+print(f"\n[저장 완료] {PLOTLY_HTML_PATH} (브라우저로 열어서 인터랙티브 차트 확인 가능)")

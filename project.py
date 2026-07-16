@@ -13,6 +13,10 @@
 #                       Pandas  : 총 2.6501초  (평균 0.5300초/회)
 #                       Polars  : 총 0.1845초  (평균 0.0369초/회)
 #                       DuckDB  : 총 0.5792초  (평균 0.1158초/회)
+# 0.5 : 2026년 7월 16일 - 주석 보강, timeit 반복 횟수 5회 -> 20회로 상향
+#.                      Pandas  : 총 10.4271초  (평균 0.5214초/회)
+#                       Polars  : 총 0.7560초  (평균 0.0378초/회)
+#                       DuckDB  : 총 2.3606초  (평균 0.1180초/회)
 # --------------
 
 import pandas as pd
@@ -37,12 +41,12 @@ print(df.isnull().sum())
 # IQR 방법으로 이상치 제거 (amount 기준)
 # amount 자체에 결측치가 있으므로, IQR 계산 전 결측 행은 별도 확인만 하고
 # between() 비교에서는 NaN이 자동으로 False 처리되어 함께 걸러짐
-Q1 = df["amount"].quantile(0.25)
-Q3 = df["amount"].quantile(0.75)
-IQR = Q3 - Q1
+Q1 = df["amount"].quantile(0.25)  # 1사분위수
+Q3 = df["amount"].quantile(0.75)  # 3사분위수
+IQR = Q3 - Q1  # 사분위 범위
 
-lower_bound = Q1 - 1.5 * IQR
-upper_bound = Q3 + 1.5 * IQR
+lower_bound = Q1 - 1.5 * IQR  # 이상치 판단 하한선
+upper_bound = Q3 + 1.5 * IQR  # 이상치 판단 상한선
 
 print("\n" + "=" * 50)
 print("[3] IQR 이상치 처리 (amount 기준)")
@@ -52,7 +56,7 @@ print(f"Q3 = {Q3:,.2f}")
 print(f"IQR = {IQR:,.2f}")
 print(f"정상 범위 = [{lower_bound:,.2f}, {upper_bound:,.2f}]")
 
-df_clean = df[df["amount"].between(lower_bound, upper_bound)]
+df_clean = df[df["amount"].between(lower_bound, upper_bound)]  # 정상 범위 내 행만 필터링
 
 # 제거 전 / 후 행 수 출력
 print("\n" + "=" * 50)
@@ -65,13 +69,13 @@ print(f"제거 비율     : {(len(df) - len(df_clean)) / len(df) * 100:.2f}%")
 
 # 2. Pandas groupby named aggregation
 result = (
-    df_clean.groupby(["region", "category"])
+    df_clean.groupby(["region", "category"])  # region, category 조합별로 그룹화
     .agg(
-        total=("amount", "sum"),
+        total=("amount", "sum"),   # named aggregation: 컬럼명을 total로 직접 지정
         avg=("amount", "mean"),
         cnt=("amount", "count"),
     )
-    .reset_index()
+    .reset_index()  # groupby 결과를 다시 일반 컬럼 형태로 변환
 )
 
 # 총매출 내림차순 정렬
@@ -90,9 +94,9 @@ print(result_display.to_string(index=False))
 
 # 3. Polars Lazy API로 동일 집계 작성
 result_pl = (
-    pl.scan_csv("sales_100k.csv")
+    pl.scan_csv("sales_100k.csv")  # Lazy로 CSV를 스캔 (즉시 로딩 X)
     .filter(
-        pl.col("amount").is_between(lower_bound, upper_bound)
+        pl.col("amount").is_between(lower_bound, upper_bound)  # Pandas와 동일한 IQR 경계 재사용
     )
     .group_by(["region", "category"])
     .agg(
@@ -101,7 +105,7 @@ result_pl = (
         pl.col("amount").count().alias("cnt"),
     )
     .sort("total", descending=True)
-    .collect()
+    .collect()  # 여기서 실제 쿼리 실행 및 최적화 적용
 )
 
 print("\n" + "=" * 50)
@@ -111,7 +115,7 @@ result_pl_display = result_pl.with_columns(
     pl.col("total").round(0),
     pl.col("avg").round(0),
 )
-with pl.Config(tbl_rows=-1, thousands_separator=True, fmt_float="full"):
+with pl.Config(tbl_rows=-1, thousands_separator=True, fmt_float="full"):  # 지수표기 방지 + 천단위 구분
     print(result_pl_display)
 
 # 4-1 DuckDB SQL로 동일 집계 작성
@@ -128,7 +132,7 @@ GROUP BY region, category
 ORDER BY total DESC
 """
 
-result_duckdb = duckdb.sql(duckdb_query).df()
+result_duckdb = duckdb.sql(duckdb_query).df()  # 쿼리 결과를 pandas DataFrame으로 변환
 
 print("\n" + "=" * 50)
 print("[7] DuckDB SQL region·category별 집계 (총매출 내림차순)")
@@ -141,6 +145,7 @@ print(result_duckdb_display.to_string(index=False))
 
 # 4-2 세 도구 성능 비교 (timeit, 동일 반복 횟수)
 def run_pandas():
+    # 매 반복마다 로딩부터 집계까지 전 과정을 새로 수행 (공정 비교를 위해 캐시 없이 처음부터)
     df_ = pd.read_csv("sales_100k.csv")
     q1_ = df_["amount"].quantile(0.25)
     q3_ = df_["amount"].quantile(0.75)
@@ -174,7 +179,7 @@ def run_duckdb():
     return duckdb.sql(duckdb_query).df()
 
 
-NUMBER = 5  # 세 도구 동일 반복 횟수
+NUMBER = 20  # 세 도구 동일 반복 횟수 (5 -> 20으로 상향, 측정 신뢰도 개선)
 
 time_pandas = timeit.timeit(run_pandas, number=NUMBER)
 time_polars = timeit.timeit(run_polars, number=NUMBER)

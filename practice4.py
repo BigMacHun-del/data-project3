@@ -11,6 +11,7 @@
 # 0.2 : 2026년 7월 16일 - EDA 시각화 4종 (2x2 서브플롯: 히스토그램+KDE / 박스플롯 / 월별 라인 / 상관 히트맵) 추가
 # 0.3 : 2026년 7월 16일 - 한글 폰트 하드코딩(Noto Sans CJK JP) -> OS별 자동 탐지 방식으로 수정
 #                       (macOS에서 한글이 네모(tofu)로 깨지는 문제 해결)
+# 0.4 : 2026년 7월 16일 - 통계 검정 추가 (서울 vs 부산 t-test, category x payment_method 카이제곱)
 # --------------
 
 import sys
@@ -18,6 +19,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
+from scipy import stats
 
 FILE_PATH = "sales_100k.csv"
 
@@ -99,3 +101,46 @@ plt.tight_layout()
 plt.savefig("eda_4charts.png", dpi=150)
 print("[저장 완료] eda_4charts.png")
 plt.show()
+
+
+# -----------------------------
+# 2-1. t-test - 서울 vs 부산 평균 매출(amount) 차이 검정
+# -----------------------------
+seoul_amount = df_clean[df_clean["region"] == "서울"]["amount"]
+busan_amount = df_clean[df_clean["region"] == "부산"]["amount"]
+
+t_stat, t_pvalue = stats.ttest_ind(seoul_amount, busan_amount, equal_var=False)  # Welch's t-test (분산 동일 가정 X)
+
+print("\n" + "=" * 50)
+print("[t-test] 서울 vs 부산 평균 매출(amount) 차이")
+print("=" * 50)
+print(f"서울 평균 : {seoul_amount.mean():,.0f}  (n={len(seoul_amount):,})")
+print(f"부산 평균 : {busan_amount.mean():,.0f}  (n={len(busan_amount):,})")
+print(f"t-statistic = {t_stat:.4f}, p-value = {t_pvalue:.4f}")
+
+# p-value 해석 (유의수준 0.05 기준)
+if t_pvalue < 0.05:
+    print("=> p < 0.05 이므로 서울과 부산의 평균 매출 차이는 통계적으로 유의미합니다.")
+else:
+    print("=> p >= 0.05 이므로 서울과 부산의 평균 매출 차이는 통계적으로 유의미하지 않습니다.")
+
+
+# -----------------------------
+# 2-2. 카이제곱 검정 - category x payment_method 독립성 검정
+# -----------------------------
+contingency_table = pd.crosstab(df_clean["category"], df_clean["payment_method"])
+
+chi2_stat, chi2_pvalue, dof, expected = stats.chi2_contingency(contingency_table)
+
+print("\n" + "=" * 50)
+print("[카이제곱 검정] category x payment_method 독립성 검정")
+print("=" * 50)
+print("분할표 (contingency table):")
+print(contingency_table)
+print(f"\nchi2-statistic = {chi2_stat:.4f}, p-value = {chi2_pvalue:.4f}, 자유도(dof) = {dof}")
+
+# p-value 해석 (유의수준 0.05 기준)
+if chi2_pvalue < 0.05:
+    print("=> p < 0.05 이므로 category와 payment_method는 서로 독립이 아닙니다 (연관성이 있습니다).")
+else:
+    print("=> p >= 0.05 이므로 category와 payment_method는 서로 독립입니다 (연관성이 없습니다).")

@@ -8,14 +8,15 @@
 # 변경사항 내역
 # 0.1 : 2026년 7월 16일 - 최초 작성 Pandas EDA 기초 탐색 + 이상치 처리
 # 0.2 : 2026년 7월 16일 - Pandas groupby named aggregation 추가
+# 0.3 : 2026년 7월 16일 - Polars Lazy API 동일 집계 추가
 # --------------
 
 import pandas as pd
+import polars as pl
 
 # 데이터 로딩
 df = pd.read_csv("sales_100k.csv")
 
-# 1. 기초 탐색, 이상치 처리
 # 기초 탐색 (df.info(), isnull().sum())
 print("=" * 50)
 print("[1] df.info()")
@@ -79,3 +80,30 @@ print("\n" + "=" * 50)
 print("[5] Pandas region·category별 집계 (총매출 내림차순)")
 print("=" * 50)
 print(result_display.to_string(index=False))
+
+
+# 3. Polars Lazy API로 동일 집계 작성
+result_pl = (
+    pl.scan_csv("sales_100k.csv")
+    .filter(
+        pl.col("amount").is_between(lower_bound, upper_bound)
+    )
+    .group_by(["region", "category"])
+    .agg(
+        pl.col("amount").sum().alias("total"),
+        pl.col("amount").mean().alias("avg"),
+        pl.col("amount").count().alias("cnt"),
+    )
+    .sort("total", descending=True)
+    .collect()
+)
+
+print("\n" + "=" * 50)
+print("[6] Polars Lazy API region·category별 집계 (총매출 내림차순)")
+print("=" * 50)
+result_pl_display = result_pl.with_columns(
+    pl.col("total").round(0),
+    pl.col("avg").round(0),
+)
+with pl.Config(tbl_rows=-1, thousands_separator=True, fmt_float="full"):
+    print(result_pl_display)

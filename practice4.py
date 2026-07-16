@@ -14,6 +14,7 @@
 # 0.4 : 2026년 7월 16일 - 통계 검정 추가 (서울 vs 부산 t-test, category x payment_method 카이제곱)
 # 0.5 : 2026년 7월 16일 - sklearn Pipeline 구성 + 저장/재로딩 추가 (amount 예측 회귀 모델)
 # 0.6 : 2026년 7월 16일 - Plotly 인터랙티브 막대 차트(지역·카테고리별 총매출) 추가, HTML 저장
+# 0.7 : 2026년 7월 16일 - 전 구간(로딩/시각화/통계검정/Pipeline/Plotly)에 예외처리 추가
 # --------------
 
 import sys
@@ -55,112 +56,145 @@ else:
 
 mpl.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 
-# -----------------------------
+REQUIRED_COLUMNS = {"region", "category", "amount", "order_date", "quantity", "unit_price",
+                    "payment_method", "customer_age", "customer_gender"}
+
 # 0. 데이터 로딩 + IQR 이상치 제거 (실습 3과 동일한 전처리 로직 재사용)
-# -----------------------------
 try:
     df = pd.read_csv(FILE_PATH)
 except FileNotFoundError:
     print(f"[오류] '{FILE_PATH}' 파일을 찾을 수 없습니다. 코드와 같은 폴더에 있는지 확인해주세요.")
     sys.exit(1)
+except pd.errors.EmptyDataError:
+    print(f"[오류] '{FILE_PATH}' 파일에 데이터가 없습니다.")
+    sys.exit(1)
+except Exception as e:
+    print(f"[오류] CSV 로딩 중 예상치 못한 문제가 발생했습니다: {e}")
+    sys.exit(1)
 
-Q1 = df["amount"].quantile(0.25)
-Q3 = df["amount"].quantile(0.75)
-IQR = Q3 - Q1
-lower_bound = Q1 - 1.5 * IQR
-upper_bound = Q3 + 1.5 * IQR
+missing_cols = REQUIRED_COLUMNS - set(df.columns)
+if missing_cols:
+    print(f"[오류] 필수 컬럼이 없습니다: {missing_cols}")
+    sys.exit(1)
+
+try:
+    Q1 = df["amount"].quantile(0.25)
+    Q3 = df["amount"].quantile(0.75)
+    IQR = Q3 - Q1
+    if pd.isna(Q1) or pd.isna(Q3):
+        raise ValueError("amount 컬럼에 유효한 값이 없어 IQR을 계산할 수 없습니다.")
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+except ValueError as e:
+    print(f"[오류] IQR 계산 실패: {e}")
+    sys.exit(1)
 
 df_clean = df[df["amount"].between(lower_bound, upper_bound)].copy()
 
+if len(df_clean) == 0:
+    print("[오류] 이상치 제거 후 남은 데이터가 없어 이후 분석을 진행할 수 없습니다.")
+    sys.exit(1)
+
 # order_date를 datetime으로 변환 (월별 라인 차트에 사용)
-df_clean["order_date"] = pd.to_datetime(df_clean["order_date"])
+try:
+    df_clean["order_date"] = pd.to_datetime(df_clean["order_date"])
+except (ValueError, TypeError) as e:
+    print(f"[오류] order_date를 날짜 형식으로 변환할 수 없습니다: {e}")
+    sys.exit(1)
+
 df_clean["order_month"] = df_clean["order_date"].dt.to_period("M").astype(str)
 
 print(f"[데이터 준비 완료] 이상치 제거 후 {len(df_clean):,}행")
 
-# -----------------------------
 # 1. EDA 시각화 4종 (2x2 서브플롯 - 하나의 figure에 통합)
-# -----------------------------
-fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-fig.suptitle("EDA 시각화 4종 - amount 기준", fontsize=16)
+try:
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle("EDA 시각화 4종 - amount 기준", fontsize=16)
 
-# (1) 히스토그램 + KDE - amount 분포 확인
-sns.histplot(df_clean["amount"], kde=True, ax=axes[0, 0], color="steelblue")
-axes[0, 0].set_title("1) 히스토그램 + KDE (amount 분포)")
-axes[0, 0].set_xlabel("amount")
+    # (1) 히스토그램 + KDE - amount 분포 확인
+    sns.histplot(df_clean["amount"], kde=True, ax=axes[0, 0], color="steelblue")
+    axes[0, 0].set_title("1) 히스토그램 + KDE (amount 분포)")
+    axes[0, 0].set_xlabel("amount")
 
-# (2) 박스플롯 - region별 amount 분포 비교
-sns.boxplot(data=df_clean, x="region", y="amount", ax=axes[0, 1])
-axes[0, 1].set_title("2) 박스플롯 (region별 amount 분포)")
-axes[0, 1].tick_params(axis="x", rotation=45)
+    # (2) 박스플롯 - region별 amount 분포 비교
+    sns.boxplot(data=df_clean, x="region", y="amount", ax=axes[0, 1])
+    axes[0, 1].set_title("2) 박스플롯 (region별 amount 분포)")
+    axes[0, 1].tick_params(axis="x", rotation=45)
 
-# (3) 월별 라인 차트 - 월별 총매출 추세
-monthly_total = df_clean.groupby("order_month")["amount"].sum().sort_index()
-axes[1, 0].plot(monthly_total.index, monthly_total.values, marker="o", color="darkorange")
-axes[1, 0].set_title("3) 월별 라인 차트 (월별 총매출 추세)")
-axes[1, 0].tick_params(axis="x", rotation=45)
-axes[1, 0].set_ylabel("총매출")
+    # (3) 월별 라인 차트 - 월별 총매출 추세
+    monthly_total = df_clean.groupby("order_month")["amount"].sum().sort_index()
+    axes[1, 0].plot(monthly_total.index, monthly_total.values, marker="o", color="darkorange")
+    axes[1, 0].set_title("3) 월별 라인 차트 (월별 총매출 추세)")
+    axes[1, 0].tick_params(axis="x", rotation=45)
+    axes[1, 0].set_ylabel("총매출")
 
-# (4) 상관 히트맵 - 수치형 변수 간 상관관계
-numeric_cols = ["quantity", "unit_price", "customer_age", "amount"]
-corr = df_clean[numeric_cols].corr()
-sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", ax=axes[1, 1])
-axes[1, 1].set_title("4) 상관 히트맵 (수치형 변수)")
+    # (4) 상관 히트맵 - 수치형 변수 간 상관관계
+    numeric_cols = ["quantity", "unit_price", "customer_age", "amount"]
+    corr = df_clean[numeric_cols].corr()
+    sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", ax=axes[1, 1])
+    axes[1, 1].set_title("4) 상관 히트맵 (수치형 변수)")
 
-plt.tight_layout()
-plt.savefig("eda_4charts.png", dpi=150)
-print("[저장 완료] eda_4charts.png")
-plt.show()
+    plt.tight_layout()
+    plt.savefig("eda_4charts.png", dpi=150)
+    print("[저장 완료] eda_4charts.png")
+    plt.show()
+except Exception as e:
+    # 시각화 실패는 이후 통계 검정/Pipeline 진행에 지장이 없으므로 종료하지 않고 경고만 출력
+    print(f"[오류] 시각화 생성 중 문제가 발생했습니다: {e}")
+    plt.close("all")
 
 
-# -----------------------------
 # 2-1. t-test - 서울 vs 부산 평균 매출(amount) 차이 검정
-# -----------------------------
 seoul_amount = df_clean[df_clean["region"] == "서울"]["amount"]
 busan_amount = df_clean[df_clean["region"] == "부산"]["amount"]
 
-t_stat, t_pvalue = stats.ttest_ind(seoul_amount, busan_amount, equal_var=False)  # Welch's t-test (분산 동일 가정 X)
-
-print("\n" + "=" * 50)
-print("[t-test] 서울 vs 부산 평균 매출(amount) 차이")
-print("=" * 50)
-print(f"서울 평균 : {seoul_amount.mean():,.0f}  (n={len(seoul_amount):,})")
-print(f"부산 평균 : {busan_amount.mean():,.0f}  (n={len(busan_amount):,})")
-print(f"t-statistic = {t_stat:.4f}, p-value = {t_pvalue:.4f}")
-
-# p-value 해석 (유의수준 0.05 기준)
-if t_pvalue < 0.05:
-    print("=> p < 0.05 이므로 서울과 부산의 평균 매출 차이는 통계적으로 유의미합니다.")
+if len(seoul_amount) == 0 or len(busan_amount) == 0:
+    print("[오류] 서울 또는 부산 데이터가 없어 t-test를 수행할 수 없습니다.")
 else:
-    print("=> p >= 0.05 이므로 서울과 부산의 평균 매출 차이는 통계적으로 유의미하지 않습니다.")
+    try:
+        t_stat, t_pvalue = stats.ttest_ind(seoul_amount, busan_amount, equal_var=False)  # Welch's t-test (분산 동일 가정 X)
+
+        print("\n" + "=" * 50)
+        print("[t-test] 서울 vs 부산 평균 매출(amount) 차이")
+        print("=" * 50)
+        print(f"서울 평균 : {seoul_amount.mean():,.0f}  (n={len(seoul_amount):,})")
+        print(f"부산 평균 : {busan_amount.mean():,.0f}  (n={len(busan_amount):,})")
+        print(f"t-statistic = {t_stat:.4f}, p-value = {t_pvalue:.4f}")
+
+        # p-value 해석 (유의수준 0.05 기준)
+        if t_pvalue < 0.05:
+            print("=> p < 0.05 이므로 서울과 부산의 평균 매출 차이는 통계적으로 유의미합니다.")
+        else:
+            print("=> p >= 0.05 이므로 서울과 부산의 평균 매출 차이는 통계적으로 유의미하지 않습니다.")
+    except Exception as e:
+        print(f"[오류] t-test 수행 중 문제가 발생했습니다: {e}")
 
 
-# -----------------------------
 # 2-2. 카이제곱 검정 - category x payment_method 독립성 검정
-# -----------------------------
-contingency_table = pd.crosstab(df_clean["category"], df_clean["payment_method"])
+try:
+    contingency_table = pd.crosstab(df_clean["category"], df_clean["payment_method"])
+    if contingency_table.empty or (contingency_table.values == 0).all():
+        raise ValueError("분할표가 비어있거나 모든 값이 0이라 카이제곱 검정을 수행할 수 없습니다.")
 
-chi2_stat, chi2_pvalue, dof, expected = stats.chi2_contingency(contingency_table)
+    chi2_stat, chi2_pvalue, dof, expected = stats.chi2_contingency(contingency_table)
 
-print("\n" + "=" * 50)
-print("[카이제곱 검정] category x payment_method 독립성 검정")
-print("=" * 50)
-print("분할표 (contingency table):")
-print(contingency_table)
-print(f"\nchi2-statistic = {chi2_stat:.4f}, p-value = {chi2_pvalue:.4f}, 자유도(dof) = {dof}")
+    print("\n" + "=" * 50)
+    print("[카이제곱 검정] category x payment_method 독립성 검정")
+    print("=" * 50)
+    print("분할표 (contingency table):")
+    print(contingency_table)
+    print(f"\nchi2-statistic = {chi2_stat:.4f}, p-value = {chi2_pvalue:.4f}, 자유도(dof) = {dof}")
 
-# p-value 해석 (유의수준 0.05 기준)
-if chi2_pvalue < 0.05:
-    print("=> p < 0.05 이므로 category와 payment_method는 서로 독립이 아닙니다 (연관성이 있습니다).")
-else:
-    print("=> p >= 0.05 이므로 category와 payment_method는 서로 독립입니다 (연관성이 없습니다).")
+    # p-value 해석 (유의수준 0.05 기준)
+    if chi2_pvalue < 0.05:
+        print("=> p < 0.05 이므로 category와 payment_method는 서로 독립이 아닙니다 (연관성이 있습니다).")
+    else:
+        print("=> p >= 0.05 이므로 category와 payment_method는 서로 독립입니다 (연관성이 없습니다).")
+except ValueError as e:
+    print(f"[오류] 카이제곱 검정 실패: {e}")
 
 
-# -----------------------------
 # 3. sklearn Pipeline 구성 + 저장
-#    - 목표: quantity, unit_price, customer_age(수치형) + region, category,
-#            payment_method, customer_gender(범주형)로 amount(매출)를 예측하는 회귀 모델
-# -----------------------------
 numeric_features = ["quantity", "unit_price", "customer_age"]
 categorical_features = ["region", "category", "payment_method", "customer_gender"]
 
@@ -190,31 +224,39 @@ pipe = Pipeline(steps=[
     ("model", LinearRegression()),
 ])
 
-pipe.fit(X_train, y_train)  # 훈련
-y_pred = pipe.predict(X_test)  # 예측
-r2_score = pipe.score(X_test, y_test)  # 평가 (R^2)
+try:
+    pipe.fit(X_train, y_train)  # 훈련
+    y_pred = pipe.predict(X_test)  # 예측
+    r2_score = pipe.score(X_test, y_test)  # 평가 (R^2)
 
-print("\n" + "=" * 50)
-print("[Pipeline] amount 예측 회귀 모델 (전처리 + LinearRegression)")
-print("=" * 50)
-print(f"테스트 데이터 R^2 score : {r2_score:.4f}")
-print(f"예측값 예시 (상위 5개)  : {y_pred[:5].round(0)}")
-print(f"실제값 예시 (상위 5개)  : {y_test.values[:5].round(0)}")
+    print("\n" + "=" * 50)
+    print("[Pipeline] amount 예측 회귀 모델 (전처리 + LinearRegression)")
+    print("=" * 50)
+    print(f"테스트 데이터 R^2 score : {r2_score:.4f}")
+    print(f"예측값 예시 (상위 5개)  : {y_pred[:5].round(0)}")
+    print(f"실제값 예시 (상위 5개)  : {y_test.values[:5].round(0)}")
+except Exception as e:
+    print(f"[오류] Pipeline 학습/예측 중 문제가 발생했습니다: {e}")
+    sys.exit(1)
 
 # 모델 저장
 MODEL_PATH = "sales_amount_pipeline.pkl"
-joblib.dump(pipe, MODEL_PATH)
-print(f"[저장 완료] {MODEL_PATH}")
+try:
+    joblib.dump(pipe, MODEL_PATH)
+    print(f"[저장 완료] {MODEL_PATH}")
+except (OSError, IOError) as e:
+    print(f"[오류] 모델 저장 실패: {e}")
 
 # 저장된 모델 재로딩 후 정상 작동 확인
-loaded_pipe = joblib.load(MODEL_PATH)
-reload_r2_score = loaded_pipe.score(X_test, y_test)
-print(f"[재로딩 확인] 재로딩한 모델의 R^2 score : {reload_r2_score:.4f} (원본과 동일해야 정상)")
+try:
+    loaded_pipe = joblib.load(MODEL_PATH)
+    reload_r2_score = loaded_pipe.score(X_test, y_test)
+    print(f"[재로딩 확인] 재로딩한 모델의 R^2 score : {reload_r2_score:.4f} (원본과 동일해야 정상)")
+except (OSError, IOError, FileNotFoundError) as e:
+    print(f"[오류] 모델 재로딩 실패: {e}")
 
 
-# -----------------------------
 # 4. Plotly 인터랙티브 차트 - 지역·카테고리별 총매출 막대 차트, HTML로 저장
-# -----------------------------
 region_category_total = (
     df_clean.groupby(["region", "category"], as_index=False)["amount"]
     .sum()
@@ -232,5 +274,8 @@ fig_plotly = px.bar(
 )
 
 PLOTLY_HTML_PATH = "sales_by_region_category.html"
-fig_plotly.write_html(PLOTLY_HTML_PATH)  # 화면 출력(.show())이 아니라 파일로 저장
-print(f"\n[저장 완료] {PLOTLY_HTML_PATH} (브라우저로 열어서 인터랙티브 차트 확인 가능)")
+try:
+    fig_plotly.write_html(PLOTLY_HTML_PATH)  # 화면 출력(.show())이 아니라 파일로 저장
+    print(f"\n[저장 완료] {PLOTLY_HTML_PATH} (브라우저로 열어서 인터랙티브 차트 확인 가능)")
+except (OSError, IOError) as e:
+    print(f"[오류] Plotly 차트 HTML 저장 실패: {e}")

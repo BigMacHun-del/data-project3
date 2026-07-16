@@ -9,10 +9,16 @@
 # 0.1 : 2026년 7월 16일 - 최초 작성 Pandas EDA 기초 탐색 + 이상치 처리
 # 0.2 : 2026년 7월 16일 - Pandas groupby named aggregation 추가
 # 0.3 : 2026년 7월 16일 - Polars Lazy API 동일 집계 추가
+# 0.4 : 2026년 7월 16일 - DuckDB SQL 동일 집계 + 세 도구 성능 비교(timeit, 반복 횟수 5회) 추가
+#                       Pandas  : 총 2.6501초  (평균 0.5300초/회)
+#                       Polars  : 총 0.1845초  (평균 0.0369초/회)
+#                       DuckDB  : 총 0.5792초  (평균 0.1158초/회)
 # --------------
 
 import pandas as pd
 import polars as pl
+import duckdb
+import timeit
 
 # 데이터 로딩
 df = pd.read_csv("sales_100k.csv")
@@ -107,3 +113,76 @@ result_pl_display = result_pl.with_columns(
 )
 with pl.Config(tbl_rows=-1, thousands_separator=True, fmt_float="full"):
     print(result_pl_display)
+
+# 4-1 DuckDB SQL로 동일 집계 작성
+duckdb_query = f"""
+SELECT
+    region,
+    category,
+    SUM(amount) AS total,
+    AVG(amount) AS avg,
+    COUNT(*)    AS cnt
+FROM read_csv_auto('sales_100k.csv')
+WHERE amount BETWEEN {lower_bound} AND {upper_bound}
+GROUP BY region, category
+ORDER BY total DESC
+"""
+
+result_duckdb = duckdb.sql(duckdb_query).df()
+
+print("\n" + "=" * 50)
+print("[7] DuckDB SQL region·category별 집계 (총매출 내림차순)")
+print("=" * 50)
+result_duckdb_display = result_duckdb.copy()
+result_duckdb_display["total"] = result_duckdb_display["total"].map(lambda x: f"{x:,.0f}")
+result_duckdb_display["avg"] = result_duckdb_display["avg"].map(lambda x: f"{x:,.0f}")
+print(result_duckdb_display.to_string(index=False))
+
+
+# 4-2 세 도구 성능 비교 (timeit, 동일 반복 횟수)
+def run_pandas():
+    df_ = pd.read_csv("sales_100k.csv")
+    q1_ = df_["amount"].quantile(0.25)
+    q3_ = df_["amount"].quantile(0.75)
+    iqr_ = q3_ - q1_
+    lb_ = q1_ - 1.5 * iqr_
+    ub_ = q3_ + 1.5 * iqr_
+    clean_ = df_[df_["amount"].between(lb_, ub_)]
+    return (
+        clean_.groupby(["region", "category"])
+        .agg(total=("amount", "sum"), avg=("amount", "mean"), cnt=("amount", "count"))
+        .sort_values("total", ascending=False)
+    )
+
+
+def run_polars():
+    return (
+        pl.scan_csv("sales_100k.csv")
+        .filter(pl.col("amount").is_between(lower_bound, upper_bound))
+        .group_by(["region", "category"])
+        .agg(
+            pl.col("amount").sum().alias("total"),
+            pl.col("amount").mean().alias("avg"),
+            pl.col("amount").count().alias("cnt"),
+        )
+        .sort("total", descending=True)
+        .collect()
+    )
+
+
+def run_duckdb():
+    return duckdb.sql(duckdb_query).df()
+
+
+NUMBER = 5  # 세 도구 동일 반복 횟수
+
+time_pandas = timeit.timeit(run_pandas, number=NUMBER)
+time_polars = timeit.timeit(run_polars, number=NUMBER)
+time_duckdb = timeit.timeit(run_duckdb, number=NUMBER)
+
+print("\n" + "=" * 50)
+print(f"[8] 성능 비교 (timeit, 반복 횟수={NUMBER}회 동일)")
+print("=" * 50)
+print(f"Pandas  : 총 {time_pandas:.4f}초  (평균 {time_pandas / NUMBER:.4f}초/회)")
+print(f"Polars  : 총 {time_polars:.4f}초  (평균 {time_polars / NUMBER:.4f}초/회)")
+print(f"DuckDB  : 총 {time_duckdb:.4f}초  (평균 {time_duckdb / NUMBER:.4f}초/회)")

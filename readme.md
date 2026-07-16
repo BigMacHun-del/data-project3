@@ -111,3 +111,128 @@ Pandas 대비 **Polars 약 5.4배, DuckDB 약 3.4배 빠른 성능**을 보였�
 | 0.5 | 2026-07-16 | 주석 보강, timeit 반복 횟수 5회 → 20회 상향 |
 | 0.6 | 2026-07-16 | 집계 컬럼명 avg/cnt → mean/count 통일, 출력 헤더 문구 통일 |
 | 0.7 | 2026-07-16 | 파일 로딩/컬럼 존재/집계/timeit 구간 예외처리 추가 |
+
+---
+---
+
+# [실습 4] 시각화 4종 · 통계 검정 · sklearn Pipeline
+
+**작성자**: 김대훈
+**작성일**: 2026년 7월 16일
+**대상 데이터**: `sales_100k.csv` (실습 3 연계)
+**파일**: `practice4.py`
+
+실습 3의 결과(IQR 이상치 제거된 데이터)를 이어받아 **EDA 시각화, 통계 검정(t-test/카이제곱), sklearn Pipeline, Plotly 인터랙티브 차트**로 확장하는 실습입니다.
+
+---
+
+## 1. 실습 3 → 4 연계 포인트
+
+| 실습 3 산출물 | 실습 4 활용 |
+|---|---|
+| IQR 이상치 제거된 DataFrame | 시각화·통계 검정 입력 데이터로 사용 |
+| region·category groupby 결과 | 카이제곱 분할표 기반 변수로 활용 |
+| `sales_100k.csv` | Pipeline의 학습 데이터 원본 |
+
+단, 실습 3 코드를 그대로 이어붙이는 게 아니라 `practice4.py`에서 **원본 CSV를 다시 읽고 동일한 IQR 로직을 재적용**해 `df_clean`을 만드는 방식입니다 (파일로 저장해서 넘기지 않음 — 이상치 제거는 실행 시점마다 메모리 안에서만 수행).
+
+---
+
+## 2. 실습 구성 (4단계)
+
+### 1) EDA 시각화 4종 (2×2 서브플롯)
+`fig, axes = plt.subplots(2, 2)`로 하나의 figure에 4개 차트 통합:
+- **히스토그램 + KDE**: `amount` 분포 확인 (우측으로 긴 꼬리 형태)
+- **박스플롯**: region별 `amount` 분포 비교
+- **월별 라인 차트**: `order_date` 기반 월별 총매출 추세
+- **상관 히트맵**: `quantity`, `unit_price`, `customer_age`, `amount` 간 상관관계
+
+OS별로 설치된 한글 폰트가 달라 matplotlib 폰트를 **자동 탐지**하도록 구성 (`AppleGothic`→macOS, `Malgun Gothic`→Windows, `Noto Sans CJK`→Linux 순으로 탐색).
+
+### 2) 통계 검정 — t-test + 카이제곱
+- **t-test**: 서울 vs 부산 평균 매출(`amount`) 차이를 `scipy.stats.ttest_ind`(Welch's t-test)로 검정, t-통계량·p-value 출력 후 `p < 0.05` 기준 유의미 여부 해석 문구 출력
+- **카이제곱 검정**: `category` × `payment_method` 분할표를 `pd.crosstab`으로 생성 후 `chi2_contingency`로 독립성 검정, p-value 해석 문구 출력
+
+### 3) sklearn Pipeline 구성 + 저장
+- `quantity`, `unit_price`, `customer_age`(수치형) + `region`, `category`, `payment_method`, `customer_gender`(범주형)로 `amount`를 예측하는 회귀 모델
+- `ColumnTransformer`(수치형 StandardScaler / 범주형 SimpleImputer+OneHotEncoder) + `LinearRegression`을 하나의 `Pipeline` 객체로 구성
+- `fit → predict → score` 순서 진행 후 `joblib.dump()`로 모델 저장, `joblib.load()`로 재로딩해 점수 일치 확인
+
+### 4) Plotly 인터랙티브 차트
+- 지역·카테고리별 총매출을 `plotly.express.bar`로 시각화 (`barmode="group"`)
+- `fig.show()` 대신 `.write_html()`로 `sales_by_region_category.html` 파일 저장
+
+---
+
+## 3. 예외처리
+
+실습 3과 동일한 원칙: **뒤 단계 전체가 무의미해지는 치명적 오류**는 즉시 종료하고, **한 파트 실패가 다른 파트에 영향 없는 경우**는 격리해서 나머지를 계속 진행합니다.
+
+| 구간 | 예외 상황 | 처리 |
+|---|---|---|
+| CSV 로딩 | 파일 없음 / 빈 파일 / 기타 오류 | 메시지 출력 후 종료 |
+| 컬럼 확인 | 필수 컬럼(9개) 누락 | 메시지 출력 후 종료 |
+| IQR 계산 | `amount` 전체 결측 | `ValueError` 처리 후 종료 |
+| 이상치 제거 후 데이터 0행 | 이후 분석 무의미 | 조기 종료 |
+| `order_date` 변환 | 날짜 형식이 아닌 값 | `ValueError`/`TypeError` 처리 후 종료 |
+| 1) 시각화 4종 | 차트 생성 중 오류 | 경고만 출력, 종료하지 않고 통계 검정 등 계속 진행 |
+| 2-1) t-test | 서울/부산 데이터 없음 | 사전 분기 처리로 검정 생략 |
+| 2-2) 카이제곱 | 분할표가 비어있거나 전부 0 | `ValueError` 처리 |
+| 3) Pipeline 학습/예측 | 학습 실패 | `sys.exit(1)` (이후 저장이 무의미하므로) |
+| 3) 모델 저장/재로딩 | 디스크 쓰기/읽기 실패 | `OSError`/`IOError` 개별 처리 |
+| 4) Plotly HTML 저장 | 디스크 쓰기 실패 | `OSError`/`IOError` 처리 |
+
+---
+
+## 4. 실행 방법
+
+```bash
+# 필요 패키지 설치
+python3 -m pip install matplotlib seaborn scipy scikit-learn joblib plotly
+
+# practice4.py와 sales_100k.csv를 같은 폴더에 두고 실행
+python3 practice4.py
+```
+
+실행하면 다음 3개 파일이 생성됩니다.
+- `eda_4charts.png` — EDA 시각화 4종
+- `sales_amount_pipeline.pkl` — 학습된 회귀 Pipeline 모델
+- `sales_by_region_category.html` — Plotly 인터랙티브 막대 차트
+
+---
+
+## 5. 실행 결과 요약
+
+### 시각화
+- `amount` 분포는 우측으로 긴 꼬리 형태 (저가 거래가 압도적으로 많음)
+- region별 `amount` 분포는 거의 동일한 모양 (지역 간 거래 단가 차이 크지 않음)
+- 월별 매출은 뚜렷한 추세 없이 등락 반복
+- `amount`는 `unit_price`(0.66), `quantity`(0.63)와 상관관계 있음, `customer_age`와는 무관(0.00)
+
+### 통계 검정
+| 검정 | 통계량 | p-value | 해석 |
+|---|---|---|---|
+| t-test (서울 vs 부산) | t = 0.7269 | 0.4673 | 유의미한 차이 없음 |
+| 카이제곱 (category × payment_method) | χ² = 13.5300 | 0.8889 | 서로 독립 (연관성 없음) |
+
+### Pipeline
+- 테스트 데이터 R² = **0.8411** — `quantity`, `unit_price` 위주로 매출을 잘 설명 (구조상 `amount ≈ quantity × unit_price`라 자연스러운 결과)
+- 저장 후 재로딩한 모델도 동일 R² 확인
+- 참고: `LinearRegression` 특성상 예측값에 음수가 나올 수 있음 (실제 매출은 음수가 될 수 없는데도) — 선형회귀의 한계로, 필요시 로그 변환 타겟이나 후처리(`max(0, pred)`)로 보완 가능
+
+### Plotly 차트
+지역·카테고리별 총매출 인터랙티브 막대 차트 — 서울(70B대)이 압도적 1위, 경기(58~59B), 부산(35~36B) 순으로 실습 3 결과와 일관성 확인
+
+---
+
+## 6. 버전 이력
+
+| 버전 | 날짜 | 내용 |
+|---|---|---|
+| 0.1 | 2026-07-16 | 최초 작성 — 데이터 로딩 + IQR 이상치 처리 (실습 3 연계) |
+| 0.2 | 2026-07-16 | EDA 시각화 4종 (2×2 서브플롯) 추가 |
+| 0.3 | 2026-07-16 | 한글 폰트 하드코딩 → OS별 자동 탐지 방식으로 수정 (macOS 한글 깨짐 해결) |
+| 0.4 | 2026-07-16 | 통계 검정 추가 (서울 vs 부산 t-test, category × payment_method 카이제곱) |
+| 0.5 | 2026-07-16 | sklearn Pipeline 구성 + 저장/재로딩 추가 (amount 예측 회귀 모델) |
+| 0.6 | 2026-07-16 | Plotly 인터랙티브 막대 차트 추가, HTML 저장 |
+| 0.7 | 2026-07-16 | 전 구간(로딩/시각화/통계검정/Pipeline/Plotly)에 예외처리 추가 |
